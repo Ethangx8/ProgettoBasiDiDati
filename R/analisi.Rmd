@@ -1,0 +1,175 @@
+---
+title: "Analisi dati"
+output: html_notebook
+---
+
+
+```{r}
+library(RPostgreSQL)
+library(DBI)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(survival)
+library(lubridate)
+```
+
+```{r}
+con <- dbConnect(RPostgres::Postgres(), dbname="BasiDiDati", host="localhost",port=5432, user="ethan", password="Password123")
+```
+
+
+```{r}
+aziende <- dbGetQuery(con, 'select * from azienda;')
+automobili <- dbGetQuery(con, 'select * from automobileregistrata;')
+modelli <- dbGetQuery(con, 'select * from modello;')
+trasferimenti <- dbGetQuery(con, 'select * from trasferimento')
+```
+
+
+```{r}
+auto_aziende <- inner_join(aziende, automobili)
+aam <- inner_join(auto_aziende, modelli, by= c("modello" = "nome"))
+aam$tipo_azienda[aam$tipo_azienda=='P'] = "Produttore"
+aam$tipo_azienda[aam$tipo_azienda=='R'] = "Rivenditore"
+aam$tipo_azienda[is.na(aam$tipo_azienda)] = "Normale"
+ggplot(aam, aes(x=as.factor(tipo_azienda), y=cilindrata, color = usata)) + 
+    geom_boxplot(alpha=0.69, varwidth = TRUE) + 
+    scale_color_manual(name="Tipo automobile", labels = c("Nuova", "Usata"), values = c("orange", "#7856b8")) +
+  theme(axis.title.x = element_text(margin = margin(t = 20, r = 0, b = 0, l = 0)), axis.title.y = element_text(margin = margin(t = 0, r = 20, b = 0, l = 0))) +
+    xlab("Tipo azienda") +
+    ylab('Cilindrata') 
+```
+```{r}
+serie_count <- trasferimenti %>%
+  group_by(auto_serie) %>%
+  count(name='n_trasf') %>%
+  group_by(n_trasf) %>%
+  count(name='freq')
+l <- c()
+for (i in 1:nrow(serie_count)){
+  k <- rep(serie_count[i,]$n_trasf, serie_count[i,]$freq)
+  l <- append(l, k)
+}
+
+```
+
+```{r}
+ggplot(serie_count, aes(as.factor(n_trasf), freq)) + 
+    geom_bar(stat = "identity", fill='#ffab19', alpha=0.9) + 
+    geom_vline(xintercept = mean(l), color="#d65e5a", linetype="dashed", size=1.3) +
+    geom_vline(xintercept = median(l), color="#0d9ad6", linetype="dashed", size=1.3) +
+    geom_vline(xintercept = var(l), color="#8e5ad6", linetype="dashed", size=1.3) +
+    scale_y_continuous(breaks=c(500,2500,10000,20000,25000, 30000), labels=c(500,2500,10000,20000,25000, 30000), limits =c(0, 30000), expand = c(0, 0)) +
+    theme(axis.title.x = element_text(margin = margin(t = 20, r = 0, b = 0, l = 0)), axis.title.y = element_text(margin = margin(t = 0, r = 20, b = 0, l = 0))) +
+    theme(plot.margin = margin(0.5,0.5,0.5,0.5, "cm")) +
+    xlab("Numero trasferimenti") +
+    ylab("Frequenza assoluta")
+```
+
+```{r}
+n_reg = automobili %>%
+  group_by(data_registrazione) %>%
+  count(name='n_auto')  %>%
+  ungroup()
+n_dismesse = automobili %>%
+  filter(!is.na(data_fine_gestione)) %>%
+  group_by(data_fine_gestione) %>%
+  count(name='n_auto') %>%
+  ungroup()
+n_reg_test = n_reg %>% 
+  mutate(cumsum = cumsum(n_auto))
+n_dis_test = n_dismesse %>%
+  mutate(cumsum = cumsum(n_auto))
+p = n_reg_test %>%
+  mutate(nauto = NA) %>%
+  mutate(variaz = NA)
+for (i in 1:nrow(p)){
+  p[i,]$nauto = max(append(c(0),which(n_dis_test$data_fine_gestione < p[i,]$data_registrazione)))
+  p[i,]$nauto = p[i,]$cumsum - p[i,]$nauto
+  p[i,]$variaz = if(i==1) p[i,]$n_auto else p[i,]$nauto - p[i-1,]$nauto
+}
+
+```
+```{r}
+p
+```
+
+```{r}
+test = p %>%
+  mutate(anno = year(data_registrazione))
+test = test[-c(1)] %>%
+  group_by(anno) %>%
+  summarise(variaz = sum(variaz)) %>%
+  mutate(nauto = cumsum(variaz)) %>%
+  filter(anno<2022)
+  
+test
+```
+
+```{r}
+ggplot(test,aes(x=anno)) + 
+  geom_line(aes(y=nauto), color='blue', size=1) +
+  geom_line(aes(y=variaz), color='red', size=1) +
+  theme(axis.title.x = element_text(margin = margin(t = 20, r = 0, b = 0, l = 0)), axis.title.y = element_text(margin = margin(t = 0, r = 20, b = 0, l = 0))) +
+  xlab('Anno') +
+  ylab('Numero auto')
+ggplot(test,aes(x=anno)) + 
+  geom_line(aes(y=nauto), color='blue', size=1) +
+  geom_line(aes(y=variaz), color='red', size=1) +
+  theme(axis.title.x = element_text(margin = margin(t = 20, r = 0, b = 0, l = 0)), axis.title.y = element_text(margin = margin(t = 0, r = 20, b = 0, l = 0))) +
+  scale_y_log10() +
+  xlab('Anno') +
+  ylab('Numero auto')
+```
+
+
+```{r}
+auto_modelli = inner_join(automobili, modelli, by= c("modello" = "nome"))
+auto_modelli = auto_modelli %>%
+  group_by(produttore) %>%
+  count(name='numauto')
+nomi_prod = inner_join(auto_modelli, aziende, by= c("produttore" = "p_iva"))
+nomi_prod = nomi_prod[c("nome", "numauto")] %>%
+  mutate(numauto = numauto/sum(numauto)) %>%
+  arrange(numauto) %>%
+  mutate(nome=factor(nome, levels=nome))
+
+ggplot(nomi_prod, aes(x=nome, y=numauto)) +
+    geom_segment( aes(xend=nome, yend=0)) +
+    geom_point( size=4, color="orange") +
+    coord_flip() +
+    theme_bw() +
+    xlab("Aziende") +
+    ylab("Frequenze relative")
+```
+```{r}
+trasf_modelli = inner_join(trasferimenti, modelli, by=c("auto_modello" = "nome"))
+tma = inner_join(trasf_modelli, aziende, by=c("produttore" = "p_iva"))
+tma = tma[c("codice_trasferimento", "data_trasferimento", "proprietario")]
+tma = tma %>%
+  mutate(proprietario = ifelse(is.na(proprietario),0, 1)) %>%
+  mutate(anno = year(data_trasferimento)) %>%
+  group_by(anno, proprietario) %>%
+  count(name="n_trasferimenti")
+tma
+
+```
+```{r}
+tma %>%
+  filter(anno < 2022) %>%
+ggplot(aes(x=anno, y = n_trasferimenti, color=as.factor(proprietario))) + 
+  geom_line(size=2, alpha=0.7) +
+  theme(axis.title.x = element_text(margin = margin(t = 20, r = 0, b = 0, l = 0)), axis.title.y = element_text(margin = margin(t = 0, r = 20, b = 0, l = 0))) +
+  scale_color_manual(name="Tipo produttore", labels = c("Non proprietari", "Proprietari"), values = c("orange", "#7856b8")) +
+  theme(plot.margin = margin(0.5,0.5,0.5,0.5, "cm")) +
+  xlab('Anno') +
+  ylab('Numero trasferimenti')
+```
+
+
+
+
+
+
+
